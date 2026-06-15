@@ -1,7 +1,7 @@
 // ===== CONFIG =====
 // Replace these with your Supabase project credentials
-const SUPABASE_URL = 'https://tndcsfqtwsmxbiupikgd.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRuZGNzZnF0d3NteGJpdXBpa2dkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0MzM2NjMsImV4cCI6MjA5NjAwOTY2M30.RWY3cByMoKrn47zEtOHgFrCZY45VVJhJKXiqnxXeWUg';
+const SUPABASE_URL = 'https://gquttnortstqsvaegsxj.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdxdXR0bm9ydHN0cXN2YWVnc3hqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0NDMyMTAsImV4cCI6MjA5NzAxOTIxMH0.SgZ1NxeqBfqXg0nZb2c_z4dNUcE8O_3gsKbrLlgBlq0';
 
 let sbClient = null;
 let robots = [];
