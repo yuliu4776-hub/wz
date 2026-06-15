@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0891b2">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="ROBO::TRACK">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>ROBO::TRACK</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+
+<div id="toast" class="toast"></div>
+
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal-box">
+    <div class="modal-title" id="modalTitle"></div>
+    <div class="modal-desc" id="modalDesc"></div>
+    <div class="modal-actions" id="modalActions"></div>
+  </div>
+</div>
+
+<button class="back-top" id="backTop" onclick="window.scrollTo({top:0,behavior:'smooth'})">&#8593;</button>
+
+<div class="header">
+  <div class="logo">ROBO<span>::</span>TRACK</div>
+  <div class="conn-status" id="connStatus" title="连接状态"></div>
+  <button class="header-btn accent" onclick="showView('scanner')">⊞ 扫码</button>
+  <button class="header-btn add-btn" onclick="showView('add')">+ 新增</button>
+</div>
+
+<div class="tabs" id="mainTabs">
+  <button class="tab active" onclick="switchTab(this,'list')"><span class="tab-icon">📋</span><span class="tab-text">总览</span></button>
+  <button class="tab" onclick="switchTab(this,'labels')"><span class="tab-icon">🏷️</span><span class="tab-text">标签</span></button>
+  <button class="tab" onclick="switchTab(this,'inventory')"><span class="tab-icon">📦</span><span class="tab-text">盘点</span></button>
+  <button class="tab" onclick="switchTab(this,'config')"><span class="tab-icon">⚙️</span><span class="tab-text">设置</span></button>
+</div>
+<button class="fab-scan" id="fabScan" onclick="showView('scanner')">⊞</button>
+
+<div class="container" id="app"></div>
+
+<!-- External libraries with fallback -->
+<script src="assets/observability.js"></script>
+<script src="assets/vendor-loader.js"></script>
+
+<script src="assets/js/app/utils.js"></script>
+<script src="assets/js/app/state.js"></script>
+<script src="assets/js/app/bootstrap.js"></script>
+<script src="assets/js/app/data.js"></script>
+<script src="assets/js/app/router.js"></script>
+<script src="assets/js/app/views-list.js"></script>
+<script src="assets/js/app/views-detail.js"></script>
+<script src="assets/js/app/scanner.js"></script>
+<script src="assets/js/app/labels.js"></script>
+<script src="assets/js/app/inventory.js"></script>
+<script src="assets/js/app/views-add.js"></script>
+<script src="assets/js/app/views-config.js"></script>
+<script src="assets/js/app/index.js"></script>
+<script src="assets/sw-register.js"></script>
+</body>
+</html>
