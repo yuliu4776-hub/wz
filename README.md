@@ -33,7 +33,7 @@
 |------|------|
 | 前端 | 单文件 HTML + CSS + JavaScript（无框架） |
 | 数据库 | Supabase (PostgreSQL) |
-| CDN 依赖 | Supabase JS SDK、qrcode.js、jsQR、SheetJS |
+| CDN 依赖 | Supabase JS SDK、qrcode.js、html5-qrcode、jsQR、SheetJS |
 | 部署 | GitHub Pages（静态托管，HTTPS） |
 | PWA | Service Worker + manifest.json |
 
@@ -61,6 +61,23 @@
 const SUPABASE_URL = 'https://xxxxx.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJ...';
 ```
+
+### 本地调试扫码/条形码
+
+静态部署时，摄像头扫码会优先使用浏览器中的 `html5-qrcode` 和原生 `BarcodeDetector`。本地调试如果希望启用 `/decode-barcode` 后端兜底识别，可运行：
+
+```bash
+cd zc
+python3 server.py
+```
+
+然后打开：
+
+```text
+http://localhost:8000/robots.html
+```
+
+后端兜底依赖 `Pillow`、`pyzbar` 以及系统 `zbar` 动态库。普通 `python3 -m http.server` 或 GitHub Pages 部署仍可使用前端扫码和图片识别，只是没有本地 `pyzbar` 兜底接口。
 
 ### 3. 导入数据（可选）
 
@@ -109,6 +126,7 @@ zichan/
 │   ├── vendor-loader.js # CDN 依赖加载和降级
 │   └── sw-register.js   # Service Worker 注册
 ├── supabase_setup.sql   # 数据库建表脚本
+├── server.py            # 本地条形码识别调试服务
 ├── manifest.json        # PWA 配置
 ├── sw.js                # Service Worker（离线缓存）
 ├── icon-192.png         # PWA 图标（192x192）
@@ -126,7 +144,7 @@ assets/js/app/
 ├── router.js        # 视图切换和渲染错误兜底
 ├── views-list.js    # 总览、筛选、排序、批量操作
 ├── views-detail.js  # 详情、编辑、图片上传
-├── scanner.js       # 二维码/条形码扫码
+├── scanner.js       # 二维码/条形码扫码、图片识别、本地后端兜底
 ├── labels.js        # 标签生成和打印
 ├── inventory.js     # 盘点流程
 ├── views-add.js     # 新增机器人
@@ -251,7 +269,7 @@ inventory_checks        # 盘点记录表
 | Firefox | ✅ 完整支持 |
 | 微信内置浏览器 | ✅ 基础支持（扫码需 HTTPS） |
 
-> 扫码功能需要 HTTPS 环境。本地开发可用 `localhost`，手机访问需部署到 HTTPS 地址。
+> 摄像头扫码需要 HTTPS 环境。本地开发可用 `localhost`，手机访问需部署到 HTTPS 地址。图片识别不需要摄像头权限。
 
 ---
 

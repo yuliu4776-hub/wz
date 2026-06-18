@@ -147,11 +147,18 @@ function detailBack() {
   if (detailDirty) {
     showModal('未保存的修改', '当前有未保存的修改，确定离开吗？',
       `<button class="btn btn-secondary" onclick="closeModal()">继续编辑</button>
-       <button class="btn btn-danger" onclick="closeModal();showView('list')">离开</button>`
+       <button class="btn btn-danger" onclick="closeModal();detailNavigateBack()">离开</button>`
     );
   } else {
-    showView('list');
+    detailNavigateBack();
   }
+}
+
+function detailNavigateBack() {
+  const callback = detailSaveCallback;
+  detailSaveCallback = null;
+  if (callback) callback();
+  else showView('list');
 }
 
 function showLocationSuggestions(input) {
@@ -265,7 +272,7 @@ async function saveDetail() {
   const ok = await saveToSupabase(robot);
   detailDirty = false;
   if (btn) { btn.disabled = false; btn.textContent = '保存'; }
-  if (ok && detailSaveCallback) detailSaveCallback();
+  if (ok && detailSaveCallback) detailNavigateBack();
 }
 
 function confirmDelete(id) {

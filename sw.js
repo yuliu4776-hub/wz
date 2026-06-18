@@ -1,4 +1,4 @@
-const CACHE_NAME = 'robo-track-v2';
+const CACHE_NAME = 'robo-track-v3';
 const APP_SHELL = [
   './robots.html',
   './manifest.json',
