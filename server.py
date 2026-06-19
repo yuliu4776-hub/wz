@@ -66,7 +66,12 @@ class BarcodeHandler(SimpleHTTPRequestHandler):
             payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
             image_bytes = parse_image_payload(payload)
             known_serials = parse_known_serials(payload.get("knownSerials"))
-            results = decode_image_bytes(image_bytes, known_serials)
+            results = decode_image_bytes(
+                image_bytes,
+                known_serials,
+                use_ocr=payload.get("useOcr") is True,
+                fast_only=payload.get("fastOnly") is True,
+            )
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
             return
@@ -113,29 +118,37 @@ def parse_known_serials(value) -> list[str]:
     return serials
 
 
-def decode_image_bytes(image_bytes: bytes, known_serials: list[str] | None = None) -> list[dict]:
+def decode_image_bytes(
+    image_bytes: bytes,
+    known_serials: list[str] | None = None,
+    use_ocr: bool = True,
+    fast_only: bool = False,
+) -> list[dict]:
     image = Image.open(io.BytesIO(image_bytes))
     image = ImageOps.exif_transpose(image).convert("RGB")
 
-    barcode_results = decode_barcode_variants(image)
+    barcode_results = decode_barcode_variants(image, fast_only=fast_only)
     if barcode_results:
         return barcode_results
 
-    return decode_digits_with_ocr(image, known_serials or [])
+    return decode_digits_with_ocr(image, known_serials or []) if use_ocr else []
 
 
-def decode_barcode_variants(image: Image.Image) -> list[dict]:
+def decode_barcode_variants(image: Image.Image, fast_only: bool = False) -> list[dict]:
     if zbar_decode is None:
         return []
 
-    for base_label, base in iter_barcode_base_images(image):
-        base = resize_image(base, max_side=MAX_DECODE_SIDE)
-        for degrees in (0, 90, 180, 270):
-            rotated = base.rotate(degrees, expand=True) if degrees else base
-            for prep_label, prepared in iter_barcode_preparations(rotated):
-                results = decode_with_zbar(prepared, base_label, prep_label, degrees)
-                if results:
-                    return results
+    bases = [(label, resize_image(base, max_side=MAX_DECODE_SIDE)) for label, base in iter_barcode_base_images(image)]
+    for mode in ("fast", "enhanced"):
+        if fast_only and mode != "fast":
+            continue
+        for base_label, base in bases:
+            for degrees in (0, 90, 270, 180):
+                rotated = base.rotate(degrees, expand=True) if degrees else base
+                for prep_label, prepared in iter_barcode_preparations(rotated, mode):
+                    results = decode_with_zbar(prepared, base_label, prep_label, degrees)
+                    if results:
+                        return results
 
     return []
 
@@ -171,11 +184,14 @@ def iter_barcode_base_images(image: Image.Image):
         yield "center-crop", center
 
 
-def iter_barcode_preparations(image: Image.Image):
+def iter_barcode_preparations(image: Image.Image, mode: str = "enhanced"):
     yield "raw", image
 
     gray = ImageOps.autocontrast(ImageOps.grayscale(image), cutoff=1)
     yield "gray", gray
+
+    if mode == "fast":
+        return
 
     enhanced = ImageEnhance.Contrast(gray).enhance(1.75)
     enhanced = enhanced.filter(ImageFilter.UnsharpMask(radius=1, percent=180, threshold=3))

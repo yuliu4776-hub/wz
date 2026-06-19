@@ -2,16 +2,17 @@
 const SCANNER_READER_ID = 'scannerReader';
 const SCANNER_FILE_READER_ID = 'scannerFileReader';
 const BARCODE_FORMAT_NAMES = [
-  'QR_CODE', 'CODE_128', 'CODE_39', 'CODE_93', 'CODABAR',
-  'EAN_13', 'EAN_8', 'ITF', 'UPC_A', 'UPC_E'
+  'QR_CODE', 'CODE_128'
 ];
 const BARCODE_DETECTOR_FORMATS = [
-  'qr_code', 'code_128', 'code_39', 'code_93', 'codabar',
-  'ean_13', 'ean_8', 'itf', 'upc_a', 'upc_e'
+  'qr_code', 'code_128'
 ];
+const NATIVE_BARCODE_SCAN_INTERVAL = 90;
 
 let scannerStream = null;
 let scannerAnimFrame = null;
+let scannerNativeAnimFrame = null;
+let scannerNativeLastAt = 0;
 let barcodeDetector = null;
 let barcodeScanBusy = false;
 let html5Scanner = null;
@@ -19,6 +20,9 @@ let html5FileScanner = null;
 let html5ScannerRunning = false;
 let scannerBackendTimer = null;
 let scannerBackendBusy = false;
+let scannerBackendFrameCount = 0;
+let scannerBackendFailures = 0;
+let scannerBackendDisabled = false;
 let scannerLastValue = '';
 let scannerLastAt = 0;
 let scannerTorchOn = false;
@@ -109,10 +113,14 @@ async function startHtml5Scanner() {
     html5ScannerRunning = true;
     cameraSelect.disabled = true;
     status.textContent = '请将二维码或条形码对准摄像头';
+    barcodeDetector = await createBarcodeDetector();
+    if (barcodeDetector) startNativeBarcodeFrameScan();
     startBackendFrameScan();
     updateScannerTorchAvailability();
 
-    if (window.AppObs) window.AppObs.log('scanner:html5-started');
+    if (window.AppObs) window.AppObs.log('scanner:html5-started', {
+      nativeBarcodeDetector: Boolean(barcodeDetector),
+    });
     return true;
   } catch (e) {
     if (window.AppObs) window.AppObs.warn('scanner:html5-start-failed', {
@@ -163,11 +171,11 @@ async function startLegacyScanner() {
 
         if (barcodeDetector && !barcodeScanBusy) {
           barcodeScanBusy = true;
-          barcodeDetector.detect(video)
-            .then(codes => {
+          detectNativeBarcodeFromVideoFrame(video)
+            .then(value => {
               barcodeScanBusy = false;
               if (!scannerStream) return;
-              if (codes && codes.length) handleScanResultOnce(codes[0].rawValue);
+              if (value) handleScanResultOnce(value);
             })
             .catch(() => { barcodeScanBusy = false; });
         }
@@ -188,6 +196,7 @@ async function startLegacyScanner() {
 }
 
 async function stopScanner() {
+  stopNativeBarcodeFrameScan();
   await stopHtml5Scanner();
 
   if (scannerStream) {
@@ -255,7 +264,11 @@ function resetScannerDuplicateGuard() {
 
 function createHtml5Scanner(targetId) {
   const formatsToSupport = getHtml5Formats();
-  const options = formatsToSupport.length ? { formatsToSupport } : {};
+  const options = {
+    verbose: false,
+    experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+  };
+  if (formatsToSupport.length) options.formatsToSupport = formatsToSupport;
   return new Html5Qrcode(targetId, options);
 }
 
@@ -268,9 +281,9 @@ function getHtml5Formats() {
 
 function getHtml5ScannerConfig() {
   return {
-    fps: 12,
+    fps: 16,
     qrbox: getScannerScanBox(),
-    disableFlip: false,
+    disableFlip: true,
     rememberLastUsedCamera: true,
   };
 }
@@ -280,7 +293,7 @@ function getScannerScanBox() {
   const width = Math.min((wrap && wrap.clientWidth ? wrap.clientWidth : window.innerWidth) - 40, 420);
   return {
     width: Math.max(240, width),
-    height: Math.max(180, Math.round(width * 0.62)),
+    height: Math.max(210, Math.round(width * 0.72)),
   };
 }
 
@@ -331,6 +344,64 @@ async function getNativeBarcodeFormats() {
   if (!window.BarcodeDetector?.getSupportedFormats) return BARCODE_DETECTOR_FORMATS;
   const supported = await window.BarcodeDetector.getSupportedFormats();
   return BARCODE_DETECTOR_FORMATS.filter(format => supported.includes(format));
+}
+
+function startNativeBarcodeFrameScan() {
+  stopNativeBarcodeFrameScan();
+
+  const scan = () => {
+    const video = getScannerVideoElement();
+    if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !barcodeDetector) {
+      scannerNativeAnimFrame = requestAnimationFrame(scan);
+      return;
+    }
+
+    const now = performance.now();
+    if (!barcodeScanBusy && now - scannerNativeLastAt >= NATIVE_BARCODE_SCAN_INTERVAL) {
+      scannerNativeLastAt = now;
+      barcodeScanBusy = true;
+      detectNativeBarcodeFromVideoFrame(video)
+        .then(value => {
+          barcodeScanBusy = false;
+          if (!html5ScannerRunning && !scannerStream) return;
+          if (value) handleScanResultOnce(value);
+        })
+        .catch(() => { barcodeScanBusy = false; });
+    }
+
+    scannerNativeAnimFrame = requestAnimationFrame(scan);
+  };
+
+  scan();
+}
+
+function stopNativeBarcodeFrameScan() {
+  if (scannerNativeAnimFrame) {
+    cancelAnimationFrame(scannerNativeAnimFrame);
+    scannerNativeAnimFrame = null;
+  }
+  scannerNativeLastAt = 0;
+  barcodeScanBusy = false;
+}
+
+async function detectNativeBarcodeFromVideoFrame(video) {
+  if (!barcodeDetector) return '';
+
+  const targets = captureNativeBarcodeTargets(video);
+  for (const target of targets) {
+    const detections = await barcodeDetector.detect(target);
+    if (!detections || !detections.length) continue;
+
+    const detection = detections.find(item => normalizeScanValue(item.rawValue)) || detections[0];
+    return normalizeScanValue(detection.rawValue);
+  }
+
+  return '';
+}
+
+function captureNativeBarcodeTargets(video) {
+  const crop = cropScannerFrameToOverlay(video, null, { maxSide: 960, padXRatio: 0.28, padYRatio: 0.36 });
+  return crop ? [crop, video] : [video];
 }
 
 async function toggleScannerTorch() {
@@ -422,15 +493,39 @@ async function createBarcodeImageVariants(file) {
 
   for (const degrees of rotations) {
     const canvas = drawBarcodeBitmap(bitmap, degrees);
-    variants.push({
+    addBarcodeImageVariant(variants, {
       label: degrees === 0 ? '原图' : `旋转${degrees}度`,
       canvas,
       file: await barcodeCanvasToFile(canvas, `barcode-${degrees}.png`),
     });
+
+    const crop = cropLikelyBarcodeLabel(canvas);
+    if (crop) {
+      addBarcodeImageVariant(variants, {
+        label: `${degrees === 0 ? '原图' : `旋转${degrees}度`} 标签裁剪`,
+        canvas: crop,
+        file: await barcodeCanvasToFile(crop, `barcode-${degrees}-crop.png`),
+      });
+    }
+
+    for (const enhanced of createEnhancedBarcodeCanvases(crop || canvas)) {
+      addBarcodeImageVariant(variants, {
+        label: `${degrees === 0 ? '原图' : `旋转${degrees}度`} ${enhanced.label}`,
+        canvas: enhanced.canvas,
+        file: await barcodeCanvasToFile(enhanced.canvas, `barcode-${degrees}-${enhanced.name}.png`),
+      });
+    }
   }
 
   bitmap.close?.();
   return variants;
+}
+
+function addBarcodeImageVariant(variants, variant) {
+  const key = `${variant.canvas.width}x${variant.canvas.height}:${variant.label}`;
+  if (variants.some(item => item.key === key)) return;
+  variant.key = key;
+  variants.push(variant);
 }
 
 function drawBarcodeBitmap(bitmap, degrees) {
@@ -461,6 +556,113 @@ function drawBarcodeBitmap(bitmap, degrees) {
   );
 
   return canvas;
+}
+
+function cropLikelyBarcodeLabel(canvas) {
+  const sampleMax = 420;
+  const scale = Math.min(1, sampleMax / Math.max(canvas.width, canvas.height));
+  const sampleWidth = Math.max(1, Math.round(canvas.width * scale));
+  const sampleHeight = Math.max(1, Math.round(canvas.height * scale));
+  const sample = document.createElement('canvas');
+  sample.width = sampleWidth;
+  sample.height = sampleHeight;
+  const sampleCtx = sample.getContext('2d', { willReadFrequently: true });
+  sampleCtx.drawImage(canvas, 0, 0, sampleWidth, sampleHeight);
+
+  const imageData = sampleCtx.getImageData(0, 0, sampleWidth, sampleHeight);
+  const data = imageData.data;
+  let minX = sampleWidth;
+  let minY = sampleHeight;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < sampleHeight; y += 1) {
+    for (let x = 0; x < sampleWidth; x += 1) {
+      const idx = (y * sampleWidth + x) * 4;
+      const r = data[idx];
+      const g = data[idx + 1];
+      const b = data[idx + 2];
+      const brightness = (r * 0.299) + (g * 0.587) + (b * 0.114);
+      if (brightness < 150 || r + g + b < 500) continue;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+
+  if (maxX < minX || maxY < minY) return null;
+
+  const sampleArea = sampleWidth * sampleHeight;
+  const boxArea = (maxX - minX + 1) * (maxY - minY + 1);
+  if (boxArea > sampleArea * 0.92 || boxArea < sampleArea * 0.04) return null;
+
+  const margin = Math.round(Math.max(sampleWidth, sampleHeight) * 0.035);
+  minX = Math.max(0, minX - margin);
+  minY = Math.max(0, minY - margin);
+  maxX = Math.min(sampleWidth - 1, maxX + margin);
+  maxY = Math.min(sampleHeight - 1, maxY + margin);
+
+  const sx = Math.max(0, Math.round(minX / scale));
+  const sy = Math.max(0, Math.round(minY / scale));
+  const sw = Math.min(canvas.width - sx, Math.round((maxX - minX + 1) / scale));
+  const sh = Math.min(canvas.height - sy, Math.round((maxY - minY + 1) / scale));
+  if (sw < canvas.width * 0.08 || sh < canvas.height * 0.08) return null;
+
+  const maxSide = 1800;
+  const outScale = Math.min(1, maxSide / Math.max(sw, sh));
+  const out = document.createElement('canvas');
+  out.width = Math.max(1, Math.round(sw * outScale));
+  out.height = Math.max(1, Math.round(sh * outScale));
+  const ctx = out.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, out.width, out.height);
+  return out;
+}
+
+function createEnhancedBarcodeCanvases(canvas) {
+  const gray = createProcessedBarcodeCanvas(canvas, { mode: 'gray' });
+  const binary = createProcessedBarcodeCanvas(canvas, { mode: 'binary' });
+  const highContrast = createProcessedBarcodeCanvas(canvas, { mode: 'contrast' });
+  return [
+    { name: 'gray', label: '灰度增强', canvas: gray },
+    { name: 'binary', label: '二值增强', canvas: binary },
+    { name: 'contrast', label: '对比增强', canvas: highContrast },
+  ].filter(item => item.canvas);
+}
+
+function createProcessedBarcodeCanvas(source, options) {
+  const out = document.createElement('canvas');
+  out.width = source.width;
+  out.height = source.height;
+  const ctx = out.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(source, 0, 0);
+  const imageData = ctx.getImageData(0, 0, out.width, out.height);
+  const data = imageData.data;
+  const grays = new Uint8Array(out.width * out.height);
+  let sum = 0;
+
+  for (let i = 0, p = 0; i < data.length; i += 4, p += 1) {
+    const gray = Math.round(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+    grays[p] = gray;
+    sum += gray;
+  }
+
+  const threshold = Math.max(80, Math.min(210, Math.round(sum / Math.max(1, grays.length)) - 8));
+  for (let i = 0, p = 0; i < data.length; i += 4, p += 1) {
+    let value = grays[p];
+    if (options.mode === 'binary') {
+      value = value < threshold ? 0 : 255;
+    } else if (options.mode === 'contrast') {
+      value = Math.max(0, Math.min(255, Math.round((value - 128) * 1.75 + 128)));
+    }
+    data[i] = value;
+    data[i + 1] = value;
+    data[i + 2] = value;
+    data[i + 3] = 255;
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+  return out;
 }
 
 function barcodeCanvasToFile(canvas, name) {
@@ -525,7 +727,9 @@ async function decodeImageWithHtml5Qrcode(variants) {
 async function decodeImageWithBackend(variants) {
   for (const variant of variants) {
     try {
-      const result = await postBarcodeImage(variant.canvas.toDataURL('image/jpeg', 0.92));
+      const result = await postBarcodeImage(variant.canvas.toDataURL('image/jpeg', 0.92), {
+        useOcr: true,
+      });
       if (!result) continue;
       return {
         text: result.text,
@@ -539,15 +743,30 @@ async function decodeImageWithBackend(variants) {
   return null;
 }
 
-async function postBarcodeImage(image) {
-  const response = await fetch('/decode-barcode', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      image,
-      knownSerials: getKnownScannerSerials(),
-    }),
-  });
+async function postBarcodeImage(image, options = {}) {
+  const body = {
+    image,
+    useOcr: options.useOcr === true,
+    fastOnly: options.fastOnly === true,
+  };
+  if (body.useOcr) body.knownSerials = getKnownScannerSerials();
+
+  const controller = options.timeoutMs ? new AbortController() : null;
+  const timeoutId = controller
+    ? window.setTimeout(() => controller.abort(), options.timeoutMs)
+    : null;
+
+  let response;
+  try {
+    response = await fetch('/decode-barcode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller?.signal,
+    });
+  } finally {
+    if (timeoutId) window.clearTimeout(timeoutId);
+  }
 
   if (!response.ok) return null;
 
@@ -558,7 +777,9 @@ async function postBarcodeImage(image) {
 
 function startBackendFrameScan() {
   stopBackendFrameScan();
-  scannerBackendTimer = window.setInterval(scanCurrentFrameWithBackend, 850);
+  scannerBackendDisabled = false;
+  scannerBackendFailures = 0;
+  scannerBackendTimer = window.setInterval(scanCurrentFrameWithBackend, 450);
 }
 
 function stopBackendFrameScan() {
@@ -567,25 +788,36 @@ function stopBackendFrameScan() {
     scannerBackendTimer = null;
   }
   scannerBackendBusy = false;
+  scannerBackendFrameCount = 0;
+  scannerBackendFailures = 0;
+  scannerBackendDisabled = false;
 }
 
 async function scanCurrentFrameWithBackend() {
-  if (scannerBackendBusy) return;
+  if (scannerBackendBusy || scannerBackendDisabled) return;
 
   const video = getScannerVideoElement();
   if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
 
   scannerBackendBusy = true;
   try {
-    const canvases = captureScannerFrameVariants(video);
+    scannerBackendFrameCount += 1;
+    const includeFullFrame = scannerBackendFrameCount % 4 === 0;
+    const canvases = captureScannerFrameVariants(video, { includeFullFrame });
     for (const canvas of canvases) {
-      const result = await postBarcodeImage(canvas.toDataURL('image/jpeg', 0.86));
+      const result = await postBarcodeImage(canvas.toDataURL('image/jpeg', 0.82), {
+        fastOnly: true,
+        useOcr: false,
+        timeoutMs: 360,
+      });
       if (!result) continue;
+      scannerBackendFailures = 0;
       handleScanResultOnce(result.text);
       break;
     }
   } catch {
-    // Backend frame scanning is a quiet fallback path.
+    scannerBackendFailures += 1;
+    if (scannerBackendFailures >= 3) scannerBackendDisabled = true;
   } finally {
     scannerBackendBusy = false;
   }
@@ -597,7 +829,7 @@ function getScannerVideoElement() {
 }
 
 function captureScannerFrame(video) {
-  const maxSide = 1280;
+  const maxSide = 900;
   const sourceWidth = video.videoWidth || video.clientWidth || 640;
   const sourceHeight = video.videoHeight || video.clientHeight || 480;
   const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
@@ -609,13 +841,19 @@ function captureScannerFrame(video) {
   return canvas;
 }
 
-function captureScannerFrameVariants(video) {
+function captureScannerFrameVariants(video, options = {}) {
+  const scanBox = cropScannerFrameToOverlay(video, null, {
+    maxSide: 900,
+    padXRatio: 0.24,
+    padYRatio: 0.30,
+  });
+  if (!options.includeFullFrame) return scanBox ? [scanBox] : [captureScannerFrame(video)];
+
   const frame = captureScannerFrame(video);
-  const scanBox = cropScannerFrameToOverlay(video, frame);
   return scanBox ? [scanBox, frame] : [frame];
 }
 
-function cropScannerFrameToOverlay(video, frame) {
+function cropScannerFrameToOverlay(video, frame, options = {}) {
   const overlay = document.querySelector('.scanner-overlay');
   const wrap = document.querySelector('.scanner-wrap');
   if (!overlay || !wrap || !video.clientWidth || !video.clientHeight) return null;
@@ -631,19 +869,19 @@ function cropScannerFrameToOverlay(video, frame) {
   const bottom = Math.min(overlayRect.bottom, display.top + display.height);
   if (right <= left || bottom <= top) return null;
 
-  const sourceWidth = video.videoWidth || frame.width;
-  const sourceHeight = video.videoHeight || frame.height;
+  const sourceWidth = video.videoWidth || frame?.width || 640;
+  const sourceHeight = video.videoHeight || frame?.height || 480;
   const scaleX = sourceWidth / display.width;
   const scaleY = sourceHeight / display.height;
-  const padX = (right - left) * 0.18;
-  const padY = (bottom - top) * 0.22;
+  const padX = (right - left) * (options.padXRatio ?? 0.18);
+  const padY = (bottom - top) * (options.padYRatio ?? 0.22);
   const sx = Math.max(0, Math.round((left - display.left - padX) * scaleX));
   const sy = Math.max(0, Math.round((top - display.top - padY) * scaleY));
   const sw = Math.min(sourceWidth - sx, Math.round((right - left + padX * 2) * scaleX));
   const sh = Math.min(sourceHeight - sy, Math.round((bottom - top + padY * 2) * scaleY));
   if (sw <= 0 || sh <= 0) return null;
 
-  const maxSide = 1280;
+  const maxSide = options.maxSide || 1280;
   const scale = Math.min(1, maxSide / Math.max(sw, sh));
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(sw * scale));
@@ -712,8 +950,8 @@ function handleScanResult(data) {
     showScanResult(robot);
   } else {
     if (window.AppObs) window.AppObs.warn('scanner:robot-not-found', { value: robotId });
-    showToast('未找到匹配的机器人: ' + robotId);
-    restartScanner();
+    showUnmatchedScanResult(robotId);
+    showToast('已识别到编号，但未找到匹配机器人: ' + robotId);
   }
 }
 
@@ -734,6 +972,24 @@ function findRobotByScanValue(value) {
 
   return robots.find(r => r.serial === robotId || r.id === robotId) ||
     robots.find(r => String(r.serial || '').includes(robotId));
+}
+
+function showUnmatchedScanResult(value) {
+  const resultEl = document.getElementById('scanResult');
+  if (!resultEl) return;
+
+  resultEl.innerHTML = `
+    <div class="card" style="margin:0;border:2px solid var(--amber, #f59e0b);animation:slideUp .3s ease">
+      <div style="font-size:13px;color:var(--text3);margin-bottom:6px">已识别到编号</div>
+      <div class="serial" style="font-size:20px;margin-bottom:10px">${escapeHtml(value)}</div>
+      <div style="font-size:13px;color:var(--text2);margin-bottom:12px">当前数据中没有找到对应机器人。</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary btn-sm" style="flex:1" onclick="document.getElementById('manualSearch').value='${esc(value)}';manualFind()">再次查找</button>
+        <button class="btn btn-primary btn-sm" style="flex:1" onclick="restartScanner()">继续扫描</button>
+      </div>
+    </div>
+  `;
+  resultEl.style.display = 'block';
 }
 
 function showScanResult(robot) {
