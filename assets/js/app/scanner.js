@@ -530,7 +530,7 @@ async function decodeImageWithBackend(variants) {
       return {
         text: result.text,
         format: normalizeBarcodeFormat(result.format || 'PYZBAR'),
-        source: `${variant.label} 本地后端`,
+        source: `${variant.label} ${result.source || '本地后端'}`,
       };
     } catch {
       // The local backend is optional.
@@ -543,7 +543,10 @@ async function postBarcodeImage(image) {
   const response = await fetch('/decode-barcode', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ image }),
+    body: JSON.stringify({
+      image,
+      knownSerials: getKnownScannerSerials(),
+    }),
   });
 
   if (!response.ok) return null;
@@ -555,7 +558,7 @@ async function postBarcodeImage(image) {
 
 function startBackendFrameScan() {
   stopBackendFrameScan();
-  scannerBackendTimer = window.setInterval(scanCurrentFrameWithBackend, 1000);
+  scannerBackendTimer = window.setInterval(scanCurrentFrameWithBackend, 850);
 }
 
 function stopBackendFrameScan() {
@@ -574,9 +577,13 @@ async function scanCurrentFrameWithBackend() {
 
   scannerBackendBusy = true;
   try {
-    const canvas = captureScannerFrame(video);
-    const result = await postBarcodeImage(canvas.toDataURL('image/jpeg', 0.82));
-    if (result) handleScanResultOnce(result.text);
+    const canvases = captureScannerFrameVariants(video);
+    for (const canvas of canvases) {
+      const result = await postBarcodeImage(canvas.toDataURL('image/jpeg', 0.86));
+      if (!result) continue;
+      handleScanResultOnce(result.text);
+      break;
+    }
   } catch {
     // Backend frame scanning is a quiet fallback path.
   } finally {
@@ -600,6 +607,82 @@ function captureScannerFrame(video) {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   return canvas;
+}
+
+function captureScannerFrameVariants(video) {
+  const frame = captureScannerFrame(video);
+  const scanBox = cropScannerFrameToOverlay(video, frame);
+  return scanBox ? [scanBox, frame] : [frame];
+}
+
+function cropScannerFrameToOverlay(video, frame) {
+  const overlay = document.querySelector('.scanner-overlay');
+  const wrap = document.querySelector('.scanner-wrap');
+  if (!overlay || !wrap || !video.clientWidth || !video.clientHeight) return null;
+
+  const wrapRect = wrap.getBoundingClientRect();
+  const overlayRect = overlay.getBoundingClientRect();
+  const display = getVideoDisplayRect(video, wrapRect);
+  if (!display.width || !display.height) return null;
+
+  const left = Math.max(overlayRect.left, display.left);
+  const top = Math.max(overlayRect.top, display.top);
+  const right = Math.min(overlayRect.right, display.left + display.width);
+  const bottom = Math.min(overlayRect.bottom, display.top + display.height);
+  if (right <= left || bottom <= top) return null;
+
+  const sourceWidth = video.videoWidth || frame.width;
+  const sourceHeight = video.videoHeight || frame.height;
+  const scaleX = sourceWidth / display.width;
+  const scaleY = sourceHeight / display.height;
+  const padX = (right - left) * 0.18;
+  const padY = (bottom - top) * 0.22;
+  const sx = Math.max(0, Math.round((left - display.left - padX) * scaleX));
+  const sy = Math.max(0, Math.round((top - display.top - padY) * scaleY));
+  const sw = Math.min(sourceWidth - sx, Math.round((right - left + padX * 2) * scaleX));
+  const sh = Math.min(sourceHeight - sy, Math.round((bottom - top + padY * 2) * scaleY));
+  if (sw <= 0 || sh <= 0) return null;
+
+  const maxSide = 1280;
+  const scale = Math.min(1, maxSide / Math.max(sw, sh));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(sw * scale));
+  canvas.height = Math.max(1, Math.round(sh * scale));
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+function getVideoDisplayRect(video, containerRect) {
+  const sourceWidth = video.videoWidth || video.clientWidth || containerRect.width;
+  const sourceHeight = video.videoHeight || video.clientHeight || containerRect.height;
+  const containerWidth = video.clientWidth || containerRect.width;
+  const containerHeight = video.clientHeight || containerRect.height;
+  const sourceRatio = sourceWidth / Math.max(1, sourceHeight);
+  const containerRatio = containerWidth / Math.max(1, containerHeight);
+
+  let displayWidth = containerWidth;
+  let displayHeight = containerHeight;
+  if (sourceRatio > containerRatio) {
+    displayHeight = containerHeight;
+    displayWidth = displayHeight * sourceRatio;
+  } else {
+    displayWidth = containerWidth;
+    displayHeight = displayWidth / sourceRatio;
+  }
+
+  return {
+    left: containerRect.left + (containerWidth - displayWidth) / 2,
+    top: containerRect.top + (containerHeight - displayHeight) / 2,
+    width: displayWidth,
+    height: displayHeight,
+  };
+}
+
+function getKnownScannerSerials() {
+  return Array.isArray(robots)
+    ? robots.map(robot => normalizeScanValue(robot.serial)).filter(Boolean).slice(0, 2000)
+    : [];
 }
 
 function normalizeBarcodeFormat(format) {
